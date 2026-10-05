@@ -1,0 +1,485 @@
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService   = game:GetService("TeleportService")
+local HttpService       = game:GetService("HttpService")
+local LocalPlayer       = Players.LocalPlayer
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+
+local function simulateForwardStep()
+    pcall(function()
+        local VirtualInputManager = game:GetService("VirtualInputManager")
+        if VirtualInputManager then
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.W, false, game)
+            task.wait(0.1)
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.W, false, game)
+        elseif keypress and keyrelease then
+            keypress(0x57)
+            task.wait(0.1)
+            keyrelease(0x57)
+        end
+    end)
+end
+
+simulateForwardStep()
+task.wait(0.2)
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+    char:WaitForChild("Humanoid", 10)
+    task.wait(0.5)
+    simulateForwardStep()
+end)
+
+local devv         = require(ReplicatedStorage:WaitForChild("devv"))
+local loadModule   = devv.load
+local v3item       = loadModule("v3item")
+local Signal       = require(ReplicatedStorage.devv.client.Helpers.remotes.Signal)
+local FireServer   = Signal.FireServer
+local InvokeServer = Signal.InvokeServer
+local Inventory    = v3item.inventory
+local items        = Inventory.items
+
+local function tableFind(tbl, value)
+    for _, v in pairs(tbl) do
+        if v == value then return true end
+    end
+    return false
+end
+
+local function getGuid(name)
+    for _, v in pairs(items) do
+        if v.name == name then return v.guid end
+    end
+    return nil
+end
+
+local function getRoot(character)
+    return character and (character:FindFirstChild("HumanoidRootPart")
+        or character:FindFirstChildWhichIsA("BasePart"))
+end
+
+local function refreshItems()
+    items = Inventory.items
+end
+
+local function ensureItem(itemName, buyLocation)
+    local g = getGuid(itemName)
+    if g then return g end
+    local root = getRoot(LocalPlayer.Character)
+    if not root then return nil end
+    local originalCF = root.CFrame
+    root.CFrame = buyLocation
+    local lockConn = RunService.Heartbeat:Connect(function()
+        if root and root.Parent then
+            root.CFrame = buyLocation
+            root.Velocity = Vector3.zero
+            root.RotVelocity = Vector3.zero
+        end
+    end)
+    task.wait(0.1)
+    InvokeServer("attemptPurchase", itemName)
+    task.wait(0.1)
+    if lockConn then lockConn:Disconnect() end
+    root.CFrame = originalCF
+    refreshItems()
+    return getGuid(itemName)
+end
+
+local grenadeBuyLocation = CFrame.new(659.044739, 5.77163315, -706.697632,
+    -1.1920929e-07, 0, -1.00000012, 0, 1, 0, 1.00000012, 0, -1.1920929e-07)
+local bombThrowLocation   = CFrame.new(1129.0994873046875, 14.843579292297363, -354.19488525390625)
+local bombTargetPosition  = Vector3.new(1124.0853271484, 5.3128666877747, -357.68710327148)
+local afterExplosionWaitLocation = CFrame.new(1112.95142, 16.6149864, -331.99646,
+    0, 0, -1, 0, 1, 0, 1, 0, 0)
+
+local function runATMPhase()
+    local atms = workspace:FindFirstChild("ATMs")
+    if not atms then return end
+    local root = getRoot(LocalPlayer.Character)
+    if not root then return end
+
+    local originalCF = root.CFrame
+    local nearestATM, nearestDist = nil, math.huge
+
+    for _, atm in ipairs(atms:GetChildren()) do
+        if atm:IsA("Model") and (atm:GetAttribute("health") or 0) ~= 0 then
+            local main = atm:FindFirstChild("Main")
+            if main and main:IsA("BasePart") then
+                local dist = (root.Position - main.Position).Magnitude
+                if dist < nearestDist then
+                    nearestDist = dist
+                    nearestATM = atm
+                end
+            end
+        end
+    end
+    if not nearestATM then return end
+
+    local main = nearestATM:FindFirstChild("Main")
+    local targetPos = main.Position + Vector3.new(0, -4, 0)
+    local backDir = -main.CFrame.LookVector
+    local yaw = math.atan2(backDir.X, backDir.Z)
+    local targetCF = CFrame.new(targetPos) * CFrame.Angles(math.rad(90), 0, yaw)
+
+    local lockConn = RunService.Heartbeat:Connect(function()
+        if root and root.Parent then
+            root.CFrame = targetCF
+            root.Velocity = Vector3.zero
+            root.RotVelocity = Vector3.zero
+        end
+    end)
+
+    task.wait(0.1)
+    nearestATM:SetAttribute("health", 0)
+    task.wait(0.6)
+
+    if lockConn then lockConn:Disconnect() end
+    root.CFrame = originalCF
+end
+
+local function tryBankHeist()
+    local bank = workspace:FindFirstChild("BankRobbery")
+    if not bank then return false end
+    local cashFolder = bank:FindFirstChild("BankCash") and bank.BankCash:FindFirstChild("Cash")
+    if not cashFolder or #cashFolder:GetChildren() == 0 then return false end
+
+    local root = getRoot(LocalPlayer.Character)
+    if not root then return false end
+    local originalCF = root.CFrame
+
+    local vaultDoor = bank:FindFirstChild("VaultDoor")
+    if vaultDoor then
+        local adjustedGrenadeLoc = CFrame.new(grenadeBuyLocation.Position + Vector3.new(0, -2, 0))
+        local fragGuid = ensureItem("Frag", adjustedGrenadeLoc)
+        if not fragGuid then return false end
+
+        root.CFrame = bombThrowLocation
+        local throwLockConn = RunService.Heartbeat:Connect(function()
+            if root and root.Parent then
+                root.CFrame = bombThrowLocation
+                root.Velocity = Vector3.zero
+                root.RotVelocity = Vector3.zero
+            end
+        end)
+
+        task.wait(0.3)
+        FireServer("equip", fragGuid)
+        task.wait(0.1)
+        local direction = (bombTargetPosition - root.Position).Unit
+        FireServer("throwItem", fragGuid, direction, bombTargetPosition)
+        FireServer("removeItem", fragGuid)
+
+        task.wait(4)
+        if throwLockConn then throwLockConn:Disconnect() end
+    end
+
+    bank = workspace:FindFirstChild("BankRobbery")
+    if not bank then return false end
+    local promptPart = bank:FindFirstChild("BankCash") and bank.BankCash:FindFirstChild("Main")
+    local prompt = promptPart and promptPart:FindFirstChild("Attachment")
+        and promptPart.Attachment:FindFirstChild("ProximityPrompt")
+    if not prompt or not prompt.Enabled then return false end
+
+    root = getRoot(LocalPlayer.Character)
+    if not root then return false end
+
+    local lockPos = (afterExplosionWaitLocation * CFrame.new(0, 0, -4)).Position
+    local lockCF  = CFrame.new(lockPos) * CFrame.Angles(math.rad(90), 0, 0)
+    root.CFrame = lockCF
+    local lockConn = RunService.Heartbeat:Connect(function()
+        local currentRoot = getRoot(LocalPlayer.Character)
+        if currentRoot and currentRoot.Parent then
+            currentRoot.CFrame = lockCF
+            currentRoot.Velocity = Vector3.zero
+            currentRoot.RotVelocity = Vector3.zero
+        end
+    end)
+    task.wait(1.5)
+    if lockConn then lockConn:Disconnect() end
+
+    local collectCF = CFrame.new((bank.BankCash.Pallet.CFrame * CFrame.new(0, -2, 0)).Position)
+        * CFrame.Angles(math.rad(90), 0, 0)
+    root.CFrame = collectCF
+
+    local collectLockConn = RunService.Heartbeat:Connect(function()
+        local currentRoot = getRoot(LocalPlayer.Character)
+        if currentRoot and currentRoot.Parent then
+            currentRoot.CFrame = collectCF
+            currentRoot.Velocity = Vector3.zero
+            currentRoot.RotVelocity = Vector3.zero
+        end
+    end)
+
+    local cashConnection
+    cashConnection = RunService.Heartbeat:Connect(function()
+        if not cashFolder or not cashFolder.Parent or #cashFolder:GetChildren() == 0 then
+            if cashConnection then cashConnection:Disconnect() end
+            return
+        end
+        pcall(function() fireproximityprompt(prompt) end)
+    end)
+
+    repeat task.wait(0.2) until not prompt.Enabled or #cashFolder:GetChildren() == 0
+    if cashConnection then cashConnection:Disconnect() end
+    if collectLockConn then collectLockConn:Disconnect() end
+
+    root = getRoot(LocalPlayer.Character)
+    if root then root.CFrame = originalCF end
+    return true
+end
+
+RunService.Heartbeat:Connect(function()
+    local root = getRoot(LocalPlayer.Character)
+    if not root then return end
+    local entities = workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Entities")
+    if not entities then return end
+    local cashBundles = entities:FindFirstChild("CashBundle")
+    if not cashBundles then return end
+    for _, cash in pairs(cashBundles:GetChildren()) do
+        local part = cash:FindFirstChildOfClass("Part")
+        if part and (root.Position - part.Position).Magnitude <= 30 then
+            local clickDetector = cash:FindFirstChildOfClass("ClickDetector")
+                or part:FindFirstChildOfClass("ClickDetector")
+            if clickDetector then
+                pcall(fireclickdetector, clickDetector)
+            end
+        end
+    end
+end)
+
+local valuableItems = {
+    "Dollar Balloon", "Heart Crossbow", "Void Gem", "Diamond",
+    "Nuclear Missile Launcher", "NextBot Grenade", "Rollie",
+    "Gold Crown", "Dark Matter Gem", "Diamond Glock",
+    "Diamond Banana Peel", "Spirit Kunai", "Kunai",
+    "Purple Lucky Block", "Snowflake Balloon", "Suitcase Nuke",
+    "Nuke Launcher", "Easter Basket", "Gold Cup",
+    "Pearl Necklace", "Treasure Map", "Spectral Scythe",
+    "Bunny Balloon", "Ghost Balloon", "Clover Balloon",
+    "Bat Balloon", "Gold Clover Balloon", "Golden Rose",
+    "Black Rose", "Heart Balloon", "Skull Balloon",
+    "Candy Cane", "Nuke Case", "Pulse Rifle", "Trident", "El Fuego","Money Printer"
+}
+
+local itemAuraTimer = 0
+local ITEM_AURA_INTERVAL = 0.01
+RunService.Heartbeat:Connect(function(deltaTime)
+    itemAuraTimer = itemAuraTimer + deltaTime
+    if itemAuraTimer < ITEM_AURA_INTERVAL then return end
+    itemAuraTimer = 0
+
+    local root = getRoot(LocalPlayer.Character)
+    if not root then return end
+    local entities = workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Entities")
+    if not entities then return end
+    local itemPickup = entities:FindFirstChild("ItemPickup")
+    if not itemPickup then return end
+
+    for _, item in pairs(itemPickup:GetChildren()) do
+        local mainPart = item:FindFirstChildOfClass("Part")
+            or item:FindFirstChildWhichIsA("BasePart")
+        if mainPart and (root.Position - mainPart.Position).Magnitude <= 27 then
+            local itemName = item:GetAttribute("itemName")
+                or mainPart:GetAttribute("itemName")
+            if itemName then
+                for _, vname in pairs(valuableItems) do
+                    if itemName == vname then
+                        local click = item:FindFirstChildOfClass("ClickDetector")
+                            or mainPart:FindFirstChildOfClass("ClickDetector")
+                        if click then pcall(fireclickdetector, click) end
+                        break
+                    end
+                end
+            end
+        end
+    end
+end)
+
+local rareItemNames = {
+    "Dollar Balloon", "Heart Crossbow", "Void Gem", "Diamond",
+    "Nuclear Missile Launcher", "NextBot Grenade", "Rollie",
+    "Gold Crown", "Dark Matter Gem", "Diamond Glock",
+    "Diamond Banana Peel", "Spirit Kunai", "Kunai",
+    "Purple Lucky Block", "Snowflake Balloon", "Suitcase Nuke",
+    "Nuke Launcher", "Easter Basket", "Gold Cup",
+    "Pearl Necklace", "Treasure Map", "Spectral Scythe",
+    "Bunny Balloon", "Ghost Balloon", "Clover Balloon",
+    "Bat Balloon", "Gold Clover Balloon", "Golden Rose",
+    "Black Rose", "Heart Balloon", "Skull Balloon",
+    "Candy Cane", "Nuke Case", "Pulse Rifle", "Trident", "El Fuego"
+}
+
+local printerItemName = "Money Printer"
+local pickupBusy = false
+
+task.spawn(function()
+    while true do
+        task.wait(0.01)
+        if pickupBusy then continue end
+        local root = getRoot(LocalPlayer.Character)
+        if not root or not root.Parent then continue end
+
+        local entities = workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Entities")
+        if not entities then continue end
+        local itemPickup = entities:FindFirstChild("ItemPickup")
+        if not itemPickup then continue end
+
+        local found = false
+        for _, folder in pairs(itemPickup:GetChildren()) do
+            if found then break end
+            for _, v in pairs(folder:GetChildren()) do
+                if found then break end
+                if v:IsA("MeshPart") or v:IsA("Part") then
+                    local prompt = v:FindFirstChildOfClass("ProximityPrompt")
+                    if prompt and prompt.ObjectText then
+                        local name = prompt.ObjectText
+                        if tableFind(rareItemNames, name) or name == printerItemName then
+                            found = true
+                            pickupBusy = true
+                            pcall(function()
+                                local char = LocalPlayer.Character
+                                local rp = getRoot(char)
+                                if not rp then return end
+                                local lockConn = RunService.Heartbeat:Connect(function()
+                                    if rp and rp.Parent then
+                                        rp.CFrame = v.CFrame + Vector3.new(0, 2, 0)
+                                        rp.Velocity = Vector3.zero
+                                        rp.RotVelocity = Vector3.zero
+                                    end
+                                end)
+                                prompt.RequiresLineOfSight = false
+                                prompt.HoldDuration = 0
+                                task.wait(0.05)
+                                if fireproximityprompt then
+                                    fireproximityprompt(prompt)
+                                else
+                                    firesignal(prompt.Triggered)
+                                end
+                                task.wait(0.05)
+                                if lockConn then lockConn:Disconnect() end
+                            end)
+                            pickupBusy = false
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+local function hasAnyATMAlive()
+    local atms = workspace:FindFirstChild("ATMs")
+    if not atms then return false end
+    for _, atm in ipairs(atms:GetChildren()) do
+        if atm:IsA("Model") and (atm:GetAttribute("health") or 0) ~= 0 then
+            return true
+        end
+    end
+    return false
+end
+
+local function hasBankCash()
+    local bank = workspace:FindFirstChild("BankRobbery")
+    if not bank then return false end
+    local cashFolder = bank:FindFirstChild("BankCash") and bank.BankCash:FindFirstChild("Cash")
+    return cashFolder and #cashFolder:GetChildren() > 0
+end
+
+local function hasRareOrPrinterOnMap()
+    local entities = workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Entities")
+    if not entities then return false end
+    local itemPickup = entities:FindFirstChild("ItemPickup")
+    if not itemPickup then return false end
+    for _, folder in ipairs(itemPickup:GetChildren()) do
+        for _, part in ipairs(folder:GetChildren()) do
+            if part:IsA("MeshPart") or part:IsA("Part") then
+                local prompt = part:FindFirstChildOfClass("ProximityPrompt")
+                if prompt and prompt.ObjectText then
+                    if tableFind(rareItemNames, prompt.ObjectText)
+                        or prompt.ObjectText == printerItemName then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+local switching = false
+local function switchServer()
+    if switching then return end
+    switching = true
+
+    local requestFunc = http_request or syn.request or request
+    if not requestFunc then
+        switching = false
+        return
+    end
+
+    pcall(function()
+        local url = "https://games.roblox.com/v1/games/" .. game.PlaceId
+            .. "/servers/Public?sortOrder=Asc&limit=100"
+        local response = requestFunc({Url = url, Method = "GET"})
+        if response and response.StatusCode == 200 then
+            local data = HttpService:JSONDecode(response.Body)
+            if data and data.data and #data.data > 0 then
+                local servers = data.data
+                for i = #servers, 2, -1 do
+                    local j = math.random(i)
+                    servers[i], servers[j] = servers[j], servers[i]
+                end
+                for _, server in ipairs(servers) do
+                    if server.id ~= game.JobId and (server.playing or 0) < (server.maxPlayers or 999) then
+                        TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id, LocalPlayer)
+                        return
+                    end
+                end
+            end
+        end
+    end)
+    switching = false
+end
+
+local busy = false
+task.spawn(function()
+    while true do
+        task.wait(0.01)
+        if busy then continue end
+        if not hasBankCash() then
+            if hasAnyATMAlive() then
+                busy = true
+                pcall(runATMPhase)
+                busy = false
+            end
+        else
+            busy = true
+            pcall(tryBankHeist)
+            busy = false
+        end
+    end
+end)
+
+task.spawn(function()
+    local emptyCount = 0
+    while true do
+        task.wait(0.01)
+        local atmsAlive   = hasAnyATMAlive()
+        local bankHasCash = hasBankCash()
+        local hasRare     = hasRareOrPrinterOnMap()
+
+        if (not atmsAlive) and (not bankHasCash) and (not hasRare) then
+            emptyCount = emptyCount + 1
+            if emptyCount >= 100 then
+                switchServer()
+                task.wait(15)
+                emptyCount = 0
+            end
+        else
+            emptyCount = 0
+        end
+    end
+end)
